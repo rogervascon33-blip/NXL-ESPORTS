@@ -1,9 +1,12 @@
 import express from 'express';
 import cors from 'cors';
-import { nanoid } from 'nanoid';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+
+function nanoid(size = 21) {
+  return crypto.randomBytes(Math.ceil(size * 0.75) + 2).toString('base64url').slice(0, size);
+}
 import { getStore } from '@netlify/blobs';
 
 const app = express();
