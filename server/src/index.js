@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 
 function nanoid(size = 21) {
@@ -13,11 +14,12 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
 
-const dataDir = path.resolve('data');
-fs.mkdirSync(dataDir, { recursive: true });
-const dbFile = path.join(dataDir, 'nxl.json');
 const emptyDb = { players: [], championships: [], matches: [], shares: [], users: [], sessions: [] };
 const useNetlifyBlobs = process.env.NETLIFY === 'true' || process.env.NETLIFY_DEV === 'true';
+const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const dataDir = path.join(projectDir, 'data');
+const dbFile = path.join(dataDir, 'nxl.json');
+if (!useNetlifyBlobs) fs.mkdirSync(dataDir, { recursive: true });
 let blobDb = null;
 let blobWriteQueue = Promise.resolve();
 const blobStore = useNetlifyBlobs ? getStore({ name: 'nxl-data', consistency: 'strong' }) : null;
