@@ -1,0 +1,154 @@
+{
+  "players": [
+    {
+      "id": "iFZRbl5lLql6aF0knRPRu",
+      "name": "bahia",
+      "handle": "",
+      "team": "",
+      "created_at": "2026-09-25T18:12:14.580Z"
+    },
+    {
+      "id": "L6IeUdfFJEP4q-BK9bRPn",
+      "name": "vitoria",
+      "handle": "",
+      "team": "",
+      "created_at": "2026-09-25T18:12:21.175Z"
+    },
+    {
+      "id": "cwUJQ8l9eHzRpNffbWsQm",
+      "name": "santos",
+      "handle": "",
+      "team": "",
+      "created_at": "2026-09-25T18:12:27.526Z"
+    },
+    {
+      "id": "y5gn1rbHQpJriCmL-lHlX",
+      "name": "palmeiras",
+      "handle": "",
+      "team": "",
+      "created_at": "2026-09-25T18:12:32.741Z"
+    }
+  ],
+  "championships": [
+    {
+      "id": "CcjdtrPkBEnfdoKI6XcCO",
+      "name": "copa teste nxl",
+      "description": "Campeonato de teste da NXL",
+      "type": "knockout",
+      "legs": 2,
+      "points_win": 3,
+      "points_draw": 1,
+      "participant_ids": [
+        "y5gn1rbHQpJriCmL-lHlX",
+        "iFZRbl5lLql6aF0knRPRu",
+        "L6IeUdfFJEP4q-BK9bRPn",
+        "cwUJQ8l9eHzRpNffbWsQm"
+      ],
+      "group_count": 2,
+      "qualifiers_per_group": 2,
+      "knockout_legs": 1,
+      "status": "active",
+      "created_at": "2026-09-25T18:13:06.082Z",
+      "groups": [],
+      "generated_at": "2026-09-25T18:14:30.199Z"
+    }
+  ],
+  "matches": [
+    {
+      "id": "z4B-FOasYUZ3rI8LGqz52",
+      "status": "played",
+      "home_score": 0,
+      "away_score": 2,
+      "winner_id": null,
+      "championship_id": "CcjdtrPkBEnfdoKI6XcCO",
+      "type": "knockout",
+      "stage": "Mata-mata • 1/2",
+      "round": 1,
+      "tie_order": 0,
+      "tie_id": "fu3z_lqg9Tdj1lz9aECnQ",
+      "leg": 1,
+      "home_id": "y5gn1rbHQpJriCmL-lHlX",
+      "away_id": "iFZRbl5lLql6aF0knRPRu"
+    },
+    {
+      "id": "BDCHGvzLSeHYd6D8Xk9pC",
+      "status": "played",
+      "home_score": 2,
+      "away_score": 0,
+      "winner_id": null,
+      "championship_id": "CcjdtrPkBEnfdoKI6XcCO",
+      "type": "knockout",
+      "stage": "Mata-mata • 1/2",
+      "round": 1,
+      "tie_order": 0,
+      "tie_id": "fu3z_lqg9Tdj1lz9aECnQ",
+      "leg": 2,
+      "home_id": "iFZRbl5lLql6aF0knRPRu",
+      "away_id": "y5gn1rbHQpJriCmL-lHlX"
+    },
+    {
+      "id": "4Q-5_6HiH898dOkkLo0Ei",
+      "status": "played",
+      "home_score": 0,
+      "away_score": 2,
+      "winner_id": null,
+      "championship_id": "CcjdtrPkBEnfdoKI6XcCO",
+      "type": "knockout",
+      "stage": "Mata-mata • 1/2",
+      "round": 1,
+      "tie_order": 1,
+      "tie_id": "Hw2e_ks_VfaLKJGYHV5M8",
+      "leg": 1,
+      "home_id": "L6IeUdfFJEP4q-BK9bRPn",
+      "away_id": "cwUJQ8l9eHzRpNffbWsQm"
+    },
+    {
+      "id": "ZrY1o2c2_knal0-gylEFV",
+      "status": "played",
+      "home_score": 2,
+      "away_score": 0,
+      "winner_id": null,
+      "championship_id": "CcjdtrPkBEnfdoKI6XcCO",
+      "type": "knockout",
+      "stage": "Mata-mata • 1/2",
+      "round": 1,
+      "tie_order": 1,
+      "tie_id": "Hw2e_ks_VfaLKJGYHV5M8",
+      "leg": 2,
+      "home_id": "cwUJQ8l9eHzRpNffbWsQm",
+      "away_id": "L6IeUdfFJEP4q-BK9bRPn"
+    },
+    {
+      "id": "s6A8rXpZAwuNGUQ0rvxQm",
+      "status": "scheduled",
+      "home_score": null,
+      "away_score": null,
+      "winner_id": null,
+      "championship_id": "CcjdtrPkBEnfdoKI6XcCO",
+      "type": "knockout",
+      "stage": "Mata-mata • 2/2",
+      "round": 2,
+      "tie_order": 0,
+      "tie_id": "4vB6i1XgdL3wZL648jd7x",
+      "leg": 1,
+      "home_id": "cwUJQ8l9eHzRpNffbWsQm",
+      "away_id": null
+    },
+    {
+      "id": "k3TpmuJzZC5XrtstHvuAH",
+      "status": "scheduled",
+      "home_score": null,
+      "away_score": null,
+      "winner_id": null,
+      "championship_id": "CcjdtrPkBEnfdoKI6XcCO",
+      "type": "knockout",
+      "stage": "Mata-mata • 2/2",
+      "round": 2,
+      "tie_order": 0,
+      "tie_id": "4vB6i1XgdL3wZL648jd7x",
+      "leg": 2,
+      "home_id": null,
+      "away_id": "cwUJQ8l9eHzRpNffbWsQm"
+    }
+  ]
+}
