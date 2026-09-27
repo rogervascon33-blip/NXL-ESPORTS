@@ -2,8 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import crypto from 'crypto';
+import { seedDb } from './seed.js';
 
 function nanoid(size = 21) {
   return crypto.randomBytes(Math.ceil(size * 0.75) + 2).toString('base64url').slice(0, size);
@@ -16,7 +16,7 @@ app.use(express.json({ limit: '5mb' }));
 
 const emptyDb = { players: [], championships: [], matches: [], shares: [], users: [], sessions: [] };
 const useNetlifyBlobs = process.env.NETLIFY === 'true' || process.env.NETLIFY_DEV === 'true';
-const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const projectDir = path.resolve(process.cwd(), 'server');
 const dataDir = path.join(projectDir, 'data');
 const dbFile = path.join(dataDir, 'nxl.json');
 if (!useNetlifyBlobs) fs.mkdirSync(dataDir, { recursive: true });
@@ -30,7 +30,7 @@ function normalizeDb(db) {
 
 async function loadLocalDb() {
   try { return normalizeDb(JSON.parse(fs.readFileSync(dbFile, 'utf8'))); }
-  catch { return structuredClone(emptyDb); }
+  catch { return normalizeDb(seedDb); }
 }
 
 export const ready = (async () => {
