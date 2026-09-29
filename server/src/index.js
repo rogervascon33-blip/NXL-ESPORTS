@@ -139,7 +139,7 @@ const TEAM_LOGOS = {
 };
 function normalizeTeamName(name='') { return name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim(); }
 function logoForTeam(team='') { return TEAM_LOGOS[normalizeTeamName(team)] || null; }
-function playerView(db, p) { return { ...p, logo_url: p.logo_url || logoForTeam(p.team || '') }; }
+function playerView(db, p) { const displayTeam = String(p.team || p.name || '').trim(); return { ...p, team: displayTeam, logo_url: p.logo_url || logoForTeam(displayTeam || p.name || '') }; }
 function championFor(db, ch) {
   const ko = db.matches.filter(m => m.championship_id === ch.id && m.type === 'knockout');
   if (!ko.length) return null;
@@ -269,8 +269,11 @@ function knockoutWinner(db, ch, tieId) {
   const aGoals = games.reduce((s, m) => s + (m.home_id === a ? Number(m.home_score) : Number(m.away_score)), 0);
   const bGoals = games.reduce((s, m) => s + (m.home_id === b ? Number(m.home_score) : Number(m.away_score)), 0);
   if (aGoals > bGoals) return a; if (bGoals > aGoals) return b;
-  const decisive = games.slice().sort((x, y) => y.leg - x.leg)[0];
-  return decisive.winner_id || null;
+  const decisive = games.slice().sort((x, y) => (Number(y.leg) || 0) - (Number(x.leg) || 0))[0];
+  if (decisive?.winner_id && [a, b].includes(decisive.winner_id)) return decisive.winner_id;
+  if (Number(decisive?.home_score) > Number(decisive?.away_score)) return decisive.home_id;
+  if (Number(decisive?.away_score) > Number(decisive?.home_score)) return decisive.away_id;
+  return null;
 }
 function resolveKnockoutProgress(db, ch) {
   const rounds = Math.max(0, ...db.matches.filter(m => m.championship_id === ch.id && m.type === 'knockout').map(m => m.round || 0));
@@ -391,7 +394,7 @@ app.delete('/api/moderators/:id', requireRole('owner'), async (req,res)=>{ const
 app.patch('/api/moderators/:id', requireRole('owner'), async (req,res)=>{ const db=readDb(); const u=db.users.find(x=>x.id===req.params.id); if(!u) return res.sendStatus(404); if(req.body?.password){ if(String(req.body.password).length<6)return res.status(400).json({error:'A senha deve ter pelo menos 6 caracteres.'}); u.password_hash=hashPassword(req.body.password); } if(req.body?.name)u.name=String(req.body.name).trim(); await writeDb(db); res.json({id:u.id,name:u.name,username:u.username,role:u.role}); });
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 app.get('/api/players', (_, res) => { const db = readDb(); res.json(db.players.sort((a, b) => a.name.localeCompare(b.name)).map(p => playerView(db,p))); });
-app.post('/api/players', requireRole('owner'), async (req, res) => { const db = readDb(); const { name, handle = '', team = '', logo_url = '' } = req.body; if (!name?.trim()) return res.status(400).json({ error: 'Nome obrigatório' }); const p = { id: nanoid(), name: name.trim(), handle: handle.trim(), team: team.trim(), logo_url: logo_url || logoForTeam(team), created_at: new Date().toISOString() }; db.players.push(p); await writeDb(db); res.status(201).json(playerView(db,p)); });
+app.post('/api/players', requireRole('owner'), async (req, res) => { const db = readDb(); const { name, handle = '', team = '', logo_url = '' } = req.body; if (!name?.trim()) return res.status(400).json({ error: 'Nome obrigatório' }); const displayTeam = String(team || name || '').trim(); const p = { id: nanoid(), name: name.trim(), handle: handle.trim(), team: displayTeam, logo_url: logo_url || logoForTeam(displayTeam || name), created_at: new Date().toISOString() }; db.players.push(p); await writeDb(db); res.status(201).json(playerView(db,p)); });
 app.delete('/api/players/:id', requireRole('owner'), async (req, res) => { const db = readDb(); if (db.championships.some(c => (c.participant_ids || []).includes(req.params.id))) return res.status(409).json({ error: 'Jogador participa de um campeonato. Remova-o dos campeonatos antes.' }); db.players = db.players.filter(p => p.id !== req.params.id); await writeDb(db); res.sendStatus(204); });
 app.patch('/api/players/:id', requireRole('owner'), async (req, res) => { const db = readDb(); const p = db.players.find(x => x.id === req.params.id); if (!p) return res.sendStatus(404); if (typeof req.body.logo_url !== 'undefined') { const logo = String(req.body.logo_url || ''); if (logo && !/^data:image\/(png|jpe?g|webp);base64,/i.test(logo)) return res.status(400).json({ error: 'Escudo inválido. Use PNG, JPG ou WebP.' }); p.logo_url = logo; } await writeDb(db); res.json(playerView(db, p)); });
 
@@ -413,7 +416,21 @@ app.post('/api/championships/:id/generate', async (req, res) => {
   let count = 0; if (ch.type === 'league') count = generateLeague(db, ch, ids); else if (ch.type === 'knockout') count = generateKnockout(db, ch, ids); else count = generateGroups(db, ch, ids);
   ch.status = 'active'; ch.generated_at = new Date().toISOString(); await writeDb(db); res.json({ count, championship: ch });
 });
-app.get('/api/championships/:id/matches', (req, res) => { const db = readDb(); const ch = db.championships.find(c => c.id === req.params.id); if (!ch) return res.sendStatus(404); const ms = db.matches.filter(m => m.championship_id === req.params.id).sort((a, b) => (a.round || 0) - (b.round || 0) || (a.tie_order || 0) - (b.tie_order || 0) || (a.leg || 0) - (b.leg || 0)); const ko = ms.filter(m => m.type === 'knockout'); const totalRounds = Math.max(0, ...ko.map(m => m.round || 0)); res.set('Cache-Control','no-store, no-cache, must-revalidate, proxy-revalidate'); res.set('Pragma','no-cache'); res.set('Expires','0'); res.json(ms.map(m => ({ ...m, stage: m.type === 'knockout' ? `Mata-mata • ${knockoutStageName(m.round || 1, totalRounds)}` : m.stage, home_name: playerName(db, m.home_id), away_name: playerName(db, m.away_id), home_logo: playerView(db,db.players.find(p=>p.id===m.home_id)||{}).logo_url, away_logo: playerView(db,db.players.find(p=>p.id===m.away_id)||{}).logo_url }))); });
+app.get('/api/championships/:id/matches', async (req, res) => {
+  const db = readDb(); const ch = db.championships.find(c => c.id === req.params.id); if (!ch) return res.sendStatus(404);
+  if (ch.type === 'knockout' || ch.type === 'groups') resolveKnockoutProgress(db, ch);
+  const validIds = new Set(db.players.map(p => p.id));
+  for (const m of db.matches.filter(x => x.championship_id === ch.id && x.type === 'knockout')) {
+    if (m.home_id && !validIds.has(m.home_id)) m.home_id = null;
+    if (m.away_id && !validIds.has(m.away_id)) m.away_id = null;
+    if (m.winner_id && !validIds.has(m.winner_id)) m.winner_id = null;
+  }
+  await writeDb(db);
+  const ms = db.matches.filter(m => m.championship_id === ch.id).sort((a, b) => (a.round || 0) - (b.round || 0) || (a.tie_order || 0) - (b.tie_order || 0) || (a.leg || 0) - (b.leg || 0));
+  const ko = ms.filter(m => m.type === 'knockout'); const totalRounds = Math.max(0, ...ko.map(m => m.round || 0));
+  res.set('Cache-Control','no-store, no-cache, must-revalidate, proxy-revalidate'); res.set('Pragma','no-cache'); res.set('Expires','0');
+  res.json(ms.map(m => ({ ...m, stage: m.type === 'knockout' ? `Mata-mata • ${knockoutStageName(m.round || 1, totalRounds)}` : m.stage, home_name: playerName(db, m.home_id), away_name: playerName(db, m.away_id), home_logo: playerView(db,db.players.find(p=>p.id===m.home_id)||{}).logo_url, away_logo: playerView(db,db.players.find(p=>p.id===m.away_id)||{}).logo_url })));
+});
 app.patch('/api/matches/:id/result', async (req, res) => {
   const db = readDb();
   const m = db.matches.find(x => x.id === req.params.id);
@@ -427,14 +444,19 @@ app.patch('/api/matches/:id/result', async (req, res) => {
   m.home_penalties = null; m.away_penalties = null;
   if (m.type === 'knockout') {
     const validWinner = winner_id && [m.home_id, m.away_id].includes(winner_id) ? winner_id : null;
-    const needsWinner = hs === as && (Number(ch?.knockout_legs || ch?.legs || 1) === 1 || m.leg === 2);
+    const knockoutLegs = Number(ch?.type === 'knockout' ? (ch?.legs || 1) : (ch?.knockout_legs || 1));
+    const needsWinner = hs === as && (knockoutLegs === 1 || Number(m.leg) === 2);
     if (needsWinner) {
       const hp = Number(home_penalties), ap = Number(away_penalties);
       if (!Number.isFinite(hp) || !Number.isFinite(ap) || hp < 0 || ap < 0 || hp === ap) return res.status(400).json({ error: 'Empate decisivo: informe os pênaltis e um vencedor.' });
       if (!validWinner) return res.status(400).json({ error: 'Selecione o vencedor nos pênaltis.' });
       m.home_penalties = hp; m.away_penalties = ap;
+    } else {
+      // Empate não decisivo (por exemplo, primeiro jogo de ida/volta) é válido.
+      // Nunca carregue pênaltis ou vencedor antigo para um novo placar.
+      m.home_penalties = null; m.away_penalties = null;
     }
-    m.winner_id = validWinner;
+    m.winner_id = needsWinner ? validWinner : null;
   } else m.winner_id = null;
   m.home_score = hs; m.away_score = as; m.status = 'played';
   if (ch?.type !== 'league') resolveKnockoutProgress(db, ch);
