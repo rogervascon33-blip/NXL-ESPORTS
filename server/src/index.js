@@ -167,6 +167,17 @@ function addMatch(db, fields) {
   const m = { id: nanoid(), status: 'scheduled', home_score: null, away_score: null, winner_id: null, ...fields };
   db.matches.push(m); return m;
 }
+
+function knockoutStageName(round, totalRounds) {
+  const remaining = 2 ** (totalRounds - round + 1);
+  if (remaining === 2) return 'Final';
+  if (remaining === 4) return 'Semifinal';
+  if (remaining === 8) return 'Quartas de final';
+  if (remaining === 16) return 'Oitavas de final';
+  if (remaining === 32) return '16-avos de final';
+  if (remaining === 64) return '32-avos de final';
+  return `Mata-mata • ${round}/${totalRounds}`;
+}
 function clearMatches(db, championshipId) { db.matches = db.matches.filter(m => m.championship_id !== championshipId); }
 
 function generateLeague(db, ch, ids) {
@@ -192,11 +203,11 @@ function generateKnockout(db, ch, ids, stagePrefix = 'Mata-mata') {
       let home = null, away = null;
       if (r === 1) { home = slots[t * 2] || null; away = slots[t * 2 + 1] || null; }
       if (ch.legs === 2) {
-        addMatch(db, { championship_id: ch.id, type: 'knockout', stage: `${stagePrefix} • ${r}/${rounds}`, round: r, tie_order: t, tie_id: tieId, leg: 1, home_id: home, away_id: away });
-        addMatch(db, { championship_id: ch.id, type: 'knockout', stage: `${stagePrefix} • ${r}/${rounds}`, round: r, tie_order: t, tie_id: tieId, leg: 2, home_id: away, away_id: home });
+        addMatch(db, { championship_id: ch.id, type: 'knockout', stage: `${stagePrefix} • ${knockoutStageName(r, rounds)}`, round: r, tie_order: t, tie_id: tieId, leg: 1, home_id: home, away_id: away });
+        addMatch(db, { championship_id: ch.id, type: 'knockout', stage: `${stagePrefix} • ${knockoutStageName(r, rounds)}`, round: r, tie_order: t, tie_id: tieId, leg: 2, home_id: away, away_id: home });
         created += 2;
       } else {
-        addMatch(db, { championship_id: ch.id, type: 'knockout', stage: `${stagePrefix} • ${r}/${rounds}`, round: r, tie_order: t, tie_id: tieId, leg: 1, home_id: home, away_id: away });
+        addMatch(db, { championship_id: ch.id, type: 'knockout', stage: `${stagePrefix} • ${knockoutStageName(r, rounds)}`, round: r, tie_order: t, tie_id: tieId, leg: 1, home_id: home, away_id: away });
         created++;
       }
     }
@@ -395,7 +406,7 @@ app.post('/api/championships/:id/generate', async (req, res) => {
   ch.status = 'active'; ch.generated_at = new Date().toISOString(); await writeDb(db); res.json({ count, championship: ch });
 });
 app.get('/api/championships/:id/matches', (req, res) => { const db = readDb(); const ms = db.matches.filter(m => m.championship_id === req.params.id).sort((a, b) => (a.round || 0) - (b.round || 0) || (a.tie_order || 0) - (b.tie_order || 0) || (a.leg || 0) - (b.leg || 0)); res.json(ms.map(m => ({ ...m, home_name: playerName(db, m.home_id), away_name: playerName(db, m.away_id), home_logo: playerView(db,db.players.find(p=>p.id===m.home_id)||{}).logo_url, away_logo: playerView(db,db.players.find(p=>p.id===m.away_id)||{}).logo_url }))); });
-app.patch('/api/matches/:id/result', async (req, res) => { const db = readDb(); const m = db.matches.find(x => x.id === req.params.id); if (!m) return res.sendStatus(404); if (m.status === 'bye') return res.status(400).json({ error: 'Confronto por bye não recebe placar.' }); const { home_score, away_score, winner_id = null } = req.body; if (home_score === '' || away_score === '' || home_score == null || away_score == null || Number(home_score) < 0 || Number(away_score) < 0) return res.status(400).json({ error: 'Placar inválido.' }); m.home_score = Number(home_score); m.away_score = Number(away_score); m.status = 'played'; if (winner_id) m.winner_id = winner_id; const ch = db.championships.find(c => c.id === m.championship_id); if (ch?.type !== 'league') resolveKnockoutProgress(db, ch); if (ch?.type === 'groups') advanceGroups(db, ch); await writeDb(db); res.json({ ok: true }); });
+app.patch('/api/matches/:id/result', async (req, res) => { const db = readDb(); const m = db.matches.find(x => x.id === req.params.id); if (!m) return res.sendStatus(404); if (m.status === 'bye') return res.status(400).json({ error: 'Confronto por bye não recebe placar.' }); const { home_score, away_score, winner_id = null } = req.body; if (home_score === '' || away_score === '' || home_score == null || away_score == null || Number(home_score) < 0 || Number(away_score) < 0) return res.status(400).json({ error: 'Placar inválido.' }); m.home_score = Number(home_score); m.away_score = Number(away_score); m.status = 'played'; m.winner_id = winner_id || null; const ch = db.championships.find(c => c.id === m.championship_id); if (ch?.type !== 'league') resolveKnockoutProgress(db, ch); if (ch?.type === 'groups') advanceGroups(db, ch); await writeDb(db); res.json({ ok: true }); });
 app.post('/api/championships/:id/advance', async (req, res) => { const db = readDb(); const ch = db.championships.find(c => c.id === req.params.id); if (!ch) return res.sendStatus(404); if (ch.type !== 'groups') return res.status(400).json({ error: 'Apenas grupos + mata-mata usa avanço de fase.' }); const ok = advanceGroups(db, ch); if (!ok) return res.status(400).json({ error: 'Finalize todos os jogos da fase de grupos antes de avançar.' }); await writeDb(db); res.json({ ok: true }); });
 app.get('/api/championships/:id/standings', (req, res) => { const db = readDb(); const ch = db.championships.find(c => c.id === req.params.id); if (!ch) return res.sendStatus(404); if (ch.type === 'groups') return res.json({ groups: (ch.groups || []).map(g => ({ name: g.name, rows: standingsFor(db, ch, g.name) })) }); res.json({ groups: [{ name: 'Classificação', rows: standingsFor(db, ch) }] }); });
 app.get('/api/championships/:id/stats', (req, res) => { const db = readDb(); const ch = db.championships.find(c => c.id === req.params.id); if (!ch) return res.sendStatus(404); const ms = db.matches.filter(m => m.championship_id === ch.id && m.status === 'played'); const goals = ms.reduce((s, m) => s + Number(m.home_score) + Number(m.away_score), 0); const scorers = {}; ms.forEach(m => { if (m.home_score > m.away_score) scorers[m.home_id] = (scorers[m.home_id] || 0) + Number(m.home_score); if (m.away_score > m.home_score) scorers[m.away_id] = (scorers[m.away_id] || 0) + Number(m.away_score); }); res.json({ played: ms.length, goals, avg_goals: ms.length ? goals / ms.length : 0, top_scorers: Object.entries(scorers).sort((a,b) => b[1]-a[1]).slice(0, 10).map(([id, g]) => ({ id, name: playerName(db,id), wins: g })), champion: championFor(db,ch) }); });
