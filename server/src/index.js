@@ -14,6 +14,19 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
 
+// Netlify Functions podem manter uma instância aquecida por várias requisições.
+// Sempre recarregamos o banco do Netlify Blobs antes de cada chamada da API para
+// evitar que uma instância antiga mostre ou restaure dados que já foram removidos.
+app.use('/api', async (req, res, next) => {
+  try {
+    await refreshDb();
+    next();
+  } catch (err) {
+    console.error('Falha ao atualizar o banco NXL:', err);
+    res.status(500).json({ error: 'Não foi possível carregar os dados do NXL.' });
+  }
+});
+
 const emptyDb = { players: [], championships: [], matches: [], shares: [], users: [], sessions: [] };
 const useNetlifyBlobs = process.env.NETLIFY === 'true' || process.env.NETLIFY_DEV === 'true' || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
 const projectDir = path.resolve(process.cwd(), 'server');
@@ -40,18 +53,27 @@ export const ready = (async () => {
     return;
   }
   try {
-    const remote = await blobStore.get('db.json', { type: 'json', consistency: 'strong' });
-    if (remote) {
-      blobDb = normalizeDb(remote);
-    } else {
-      blobDb = normalizeDb(seedDb);
-      await blobStore.setJSON('db.json', blobDb);
-    }
+    await refreshDb();
   } catch (err) {
     console.error('Falha ao inicializar o banco NXL no Netlify Blobs:', err);
     throw err;
   }
 })();
+
+async function refreshDb() {
+  if (!useNetlifyBlobs) {
+    blobDb = await loadLocalDb();
+    return blobDb;
+  }
+  const remote = await blobStore.get('db.json', { type: 'json', consistency: 'strong' });
+  if (remote) {
+    blobDb = normalizeDb(remote);
+  } else {
+    blobDb = normalizeDb(seedDb);
+    await blobStore.setJSON('db.json', blobDb);
+  }
+  return blobDb;
+}
 
 function readDb() {
   if (!blobDb) throw new Error('Banco do NXL ainda está inicializando.');
@@ -61,10 +83,14 @@ function writeDb(db) {
   blobDb = normalizeDb(db);
   if (useNetlifyBlobs) {
     const snapshot = structuredClone(blobDb);
-    blobWriteQueue = blobWriteQueue.then(() => blobStore.setJSON('db.json', snapshot)).catch(err => console.error('Falha ao salvar NXL Blobs:', err));
-    return;
+    const save = blobWriteQueue.then(() => blobStore.setJSON('db.json', snapshot));
+    blobWriteQueue = save.catch(err => {
+      console.error('Falha ao salvar NXL Blobs:', err);
+    });
+    return save;
   }
   fs.writeFileSync(dbFile, JSON.stringify(blobDb, null, 2));
+  return Promise.resolve();
 }
 function playerName(db, id) { return id ? (db.players.find(p => p.id === id)?.name || 'A definir') : 'A definir'; }
 function participants(db, ch) { return (ch.participant_ids || []).map(id => db.players.find(p => p.id === id)).filter(Boolean); }
@@ -316,22 +342,22 @@ function requireAuth(req, res, next) {
 function requireRole(...roles) { return (req, res, next) => roles.includes(req.user?.role) ? next() : res.status(403).json({ error: 'Você não tem permissão para esta ação.' }); }
 
 app.get('/api/auth/status', (_, res) => { const db = readDb(); res.json({ setup_required: db.users.length === 0 }); });
-app.post('/api/auth/setup', (req, res) => {
+app.post('/api/auth/setup', async (req, res) => {
   const db = readDb(); if (db.users.length) return res.status(409).json({ error: 'A conta principal já foi configurada.' });
   const { name = 'Administrador', username, password } = req.body || {};
   if (!username?.trim() || !password || String(password).length < 6) return res.status(400).json({ error: 'Informe usuário e senha (mínimo 6 caracteres).' });
   const user = { id: nanoid(), name: String(name).trim() || 'Administrador', username: String(username).trim().toLowerCase(), password_hash: hashPassword(password), role: 'owner', created_at: new Date().toISOString() };
-  db.users.push(user); const token=nanoid(32); db.sessions.push({ token, user_id:user.id, created_at:new Date().toISOString() }); writeDb(db);
+  db.users.push(user); const token=nanoid(32); db.sessions.push({ token, user_id:user.id, created_at:new Date().toISOString() }); await writeDb(db);
   res.status(201).json({ token, user:{ id:user.id,name:user.name,username:user.username,role:user.role } });
 });
-app.post('/api/auth/login', (req,res) => {
+app.post('/api/auth/login', async (req,res) => {
   const db=readDb(); const username=String(req.body?.username||'').trim().toLowerCase(); const password=String(req.body?.password||''); const user=db.users.find(u=>u.username===username);
   if(!user || !verifyPassword(password,user.password_hash)) return res.status(401).json({error:'Usuário ou senha incorretos.'});
-  const token=nanoid(32); db.sessions=db.sessions.filter(s=>s.user_id!==user.id || new Date(s.expires_at||0)>new Date()); db.sessions.push({token,user_id:user.id,created_at:new Date().toISOString(),expires_at:new Date(Date.now()+1000*60*60*24*30).toISOString()}); writeDb(db);
+  const token=nanoid(32); db.sessions=db.sessions.filter(s=>s.user_id!==user.id || new Date(s.expires_at||0)>new Date()); db.sessions.push({token,user_id:user.id,created_at:new Date().toISOString(),expires_at:new Date(Date.now()+1000*60*60*24*30).toISOString()}); await writeDb(db);
   res.json({token,user:{id:user.id,name:user.name,username:user.username,role:user.role}});
 });
 app.get('/api/auth/me', requireAuth, (req,res)=>res.json({id:req.user.id,name:req.user.name,username:req.user.username,role:req.user.role}));
-app.post('/api/auth/logout', requireAuth, (req,res)=>{ const token=String(req.headers.authorization||'').replace(/^Bearer\s+/i,''); const db=readDb(); db.sessions=db.sessions.filter(s=>s.token!==token); writeDb(db); res.sendStatus(204); });
+app.post('/api/auth/logout', requireAuth, async (req,res)=>{ const token=String(req.headers.authorization||'').replace(/^Bearer\s+/i,''); const db=readDb(); db.sessions=db.sessions.filter(s=>s.token!==token); await writeDb(db); res.sendStatus(204); });
 
 // Everything below is private except the public share page and the team-logo helper.
 app.use('/api', (req,res,next) => {
@@ -341,39 +367,39 @@ app.use('/api', (req,res,next) => {
 });
 
 app.get('/api/moderators', requireRole('owner'), (req,res)=>{ const db=readDb(); res.json(db.users.map(u=>({id:u.id,name:u.name,username:u.username,role:u.role,created_at:u.created_at}))); });
-app.post('/api/moderators', requireRole('owner'), (req,res)=>{ const db=readDb(); const {name='',username,password}=req.body||{}; const un=String(username||'').trim().toLowerCase(); if(!un||!password||String(password).length<6) return res.status(400).json({error:'Informe nome, usuário e senha (mínimo 6 caracteres).'}); if(db.users.some(u=>u.username===un)) return res.status(409).json({error:'Esse usuário já existe.'}); const u={id:nanoid(),name:String(name||un).trim(),username:un,password_hash:hashPassword(password),role:'moderator',created_at:new Date().toISOString()}; db.users.push(u); writeDb(db); res.status(201).json({id:u.id,name:u.name,username:u.username,role:u.role,created_at:u.created_at}); });
-app.delete('/api/moderators/:id', requireRole('owner'), (req,res)=>{ const db=readDb(); const u=db.users.find(x=>x.id===req.params.id); if(!u) return res.sendStatus(404); if(u.role==='owner') return res.status(400).json({error:'A conta principal não pode ser removida.'}); db.users=db.users.filter(x=>x.id!==u.id); db.sessions=db.sessions.filter(x=>x.user_id!==u.id); writeDb(db); res.sendStatus(204); });
-app.patch('/api/moderators/:id', requireRole('owner'), (req,res)=>{ const db=readDb(); const u=db.users.find(x=>x.id===req.params.id); if(!u) return res.sendStatus(404); if(req.body?.password){ if(String(req.body.password).length<6)return res.status(400).json({error:'A senha deve ter pelo menos 6 caracteres.'}); u.password_hash=hashPassword(req.body.password); } if(req.body?.name)u.name=String(req.body.name).trim(); writeDb(db); res.json({id:u.id,name:u.name,username:u.username,role:u.role}); });
+app.post('/api/moderators', requireRole('owner'), async (req,res)=>{ const db=readDb(); const {name='',username,password}=req.body||{}; const un=String(username||'').trim().toLowerCase(); if(!un||!password||String(password).length<6) return res.status(400).json({error:'Informe nome, usuário e senha (mínimo 6 caracteres).'}); if(db.users.some(u=>u.username===un)) return res.status(409).json({error:'Esse usuário já existe.'}); const u={id:nanoid(),name:String(name||un).trim(),username:un,password_hash:hashPassword(password),role:'moderator',created_at:new Date().toISOString()}; db.users.push(u); await writeDb(db); res.status(201).json({id:u.id,name:u.name,username:u.username,role:u.role,created_at:u.created_at}); });
+app.delete('/api/moderators/:id', requireRole('owner'), async (req,res)=>{ const db=readDb(); const u=db.users.find(x=>x.id===req.params.id); if(!u) return res.sendStatus(404); if(u.role==='owner') return res.status(400).json({error:'A conta principal não pode ser removida.'}); db.users=db.users.filter(x=>x.id!==u.id); db.sessions=db.sessions.filter(x=>x.user_id!==u.id); await writeDb(db); res.sendStatus(204); });
+app.patch('/api/moderators/:id', requireRole('owner'), async (req,res)=>{ const db=readDb(); const u=db.users.find(x=>x.id===req.params.id); if(!u) return res.sendStatus(404); if(req.body?.password){ if(String(req.body.password).length<6)return res.status(400).json({error:'A senha deve ter pelo menos 6 caracteres.'}); u.password_hash=hashPassword(req.body.password); } if(req.body?.name)u.name=String(req.body.name).trim(); await writeDb(db); res.json({id:u.id,name:u.name,username:u.username,role:u.role}); });
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 app.get('/api/players', (_, res) => { const db = readDb(); res.json(db.players.sort((a, b) => a.name.localeCompare(b.name)).map(p => playerView(db,p))); });
-app.post('/api/players', requireRole('owner'), (req, res) => { const db = readDb(); const { name, handle = '', team = '', logo_url = '' } = req.body; if (!name?.trim()) return res.status(400).json({ error: 'Nome obrigatório' }); const p = { id: nanoid(), name: name.trim(), handle: handle.trim(), team: team.trim(), logo_url: logo_url || logoForTeam(team), created_at: new Date().toISOString() }; db.players.push(p); writeDb(db); res.status(201).json(playerView(db,p)); });
-app.delete('/api/players/:id', requireRole('owner'), (req, res) => { const db = readDb(); if (db.championships.some(c => (c.participant_ids || []).includes(req.params.id))) return res.status(409).json({ error: 'Jogador participa de um campeonato. Remova-o dos campeonatos antes.' }); db.players = db.players.filter(p => p.id !== req.params.id); writeDb(db); res.sendStatus(204); });
-app.patch('/api/players/:id', requireRole('owner'), (req, res) => { const db = readDb(); const p = db.players.find(x => x.id === req.params.id); if (!p) return res.sendStatus(404); if (typeof req.body.logo_url !== 'undefined') { const logo = String(req.body.logo_url || ''); if (logo && !/^data:image\/(png|jpe?g|webp);base64,/i.test(logo)) return res.status(400).json({ error: 'Escudo inválido. Use PNG, JPG ou WebP.' }); p.logo_url = logo; } writeDb(db); res.json(playerView(db, p)); });
+app.post('/api/players', requireRole('owner'), async (req, res) => { const db = readDb(); const { name, handle = '', team = '', logo_url = '' } = req.body; if (!name?.trim()) return res.status(400).json({ error: 'Nome obrigatório' }); const p = { id: nanoid(), name: name.trim(), handle: handle.trim(), team: team.trim(), logo_url: logo_url || logoForTeam(team), created_at: new Date().toISOString() }; db.players.push(p); await writeDb(db); res.status(201).json(playerView(db,p)); });
+app.delete('/api/players/:id', requireRole('owner'), async (req, res) => { const db = readDb(); if (db.championships.some(c => (c.participant_ids || []).includes(req.params.id))) return res.status(409).json({ error: 'Jogador participa de um campeonato. Remova-o dos campeonatos antes.' }); db.players = db.players.filter(p => p.id !== req.params.id); await writeDb(db); res.sendStatus(204); });
+app.patch('/api/players/:id', requireRole('owner'), async (req, res) => { const db = readDb(); const p = db.players.find(x => x.id === req.params.id); if (!p) return res.sendStatus(404); if (typeof req.body.logo_url !== 'undefined') { const logo = String(req.body.logo_url || ''); if (logo && !/^data:image\/(png|jpe?g|webp);base64,/i.test(logo)) return res.status(400).json({ error: 'Escudo inválido. Use PNG, JPG ou WebP.' }); p.logo_url = logo; } await writeDb(db); res.json(playerView(db, p)); });
 
 app.get('/api/championships', (_, res) => { const db = readDb(); res.json(db.championships.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).map(c => ({ ...c, participant_count: (c.participant_ids || []).length }))); });
-app.post('/api/championships', (req, res) => {
+app.post('/api/championships', async (req, res) => {
   const db = readDb(); const { name, description = '', type = 'league', legs = 1, participant_ids = [], points_win = 3, points_draw = 1, group_count = 2, qualifiers_per_group = 2, knockout_legs = 1 } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'Nome obrigatório' });
   if (participant_ids.length < 2) return res.status(400).json({ error: 'Selecione pelo menos 2 jogadores.' });
   const c = { id: nanoid(), name: name.trim(), description, type, legs: Number(legs) === 2 ? 2 : 1, points_win: Number(points_win) || 3, points_draw: Number(points_draw) || 1, participant_ids, group_count: Number(group_count) || 2, qualifiers_per_group: Number(qualifiers_per_group) || 2, knockout_legs: Number(knockout_legs) === 2 ? 2 : 1, position_highlights: { enabled: true, colors: ['#183b63','#254d3a','#5a4a1f','#4b2630'] }, status: 'draft', created_at: new Date().toISOString(), groups: [] };
-  db.championships.push(c); writeDb(db); res.status(201).json(c);
+  db.championships.push(c); await writeDb(db); res.status(201).json(c);
 });
 app.get('/api/championships/:id', (req, res) => { const db = readDb(); const c = db.championships.find(x => x.id === req.params.id); if (!c) return res.sendStatus(404); res.json({ ...c, participants: participants(db, c) }); });
-app.patch('/api/championships/:id', requireRole('owner','moderator'), (req,res)=>{ const db=readDb(); const c=db.championships.find(x=>x.id===req.params.id); if(!c)return res.sendStatus(404); if(typeof req.body.name!=='undefined'){ if(!String(req.body.name).trim())return res.status(400).json({error:'Nome obrigatório.'}); c.name=String(req.body.name).trim(); } if(typeof req.body.description!=='undefined')c.description=String(req.body.description); writeDb(db); res.json({...c,participant_count:(c.participant_ids||[]).length}); });
-app.patch('/api/championships/:id/settings', (req, res) => { const db = readDb(); const c = db.championships.find(x => x.id === req.params.id); if (!c) return res.sendStatus(404); const incoming = req.body?.position_highlights || {}; const enabled = incoming.enabled !== false; const colors = Array.isArray(incoming.colors) ? incoming.colors.slice(0, 8).map(x => String(x)) : []; c.position_highlights = { enabled, colors: colors.length ? colors : ['#183b63','#254d3a','#5a4a1f','#4b2630'] }; writeDb(db); res.json(c.position_highlights); });
-app.delete('/api/championships/:id', requireRole('owner'), (req, res) => { const db = readDb(); db.championships = db.championships.filter(c => c.id !== req.params.id); db.matches = db.matches.filter(m => m.championship_id !== req.params.id); writeDb(db); res.sendStatus(204); });
-app.post('/api/championships/:id/generate', (req, res) => {
+app.patch('/api/championships/:id', requireRole('owner','moderator'), async (req,res)=>{ const db=readDb(); const c=db.championships.find(x=>x.id===req.params.id); if(!c)return res.sendStatus(404); if(typeof req.body.name!=='undefined'){ if(!String(req.body.name).trim())return res.status(400).json({error:'Nome obrigatório.'}); c.name=String(req.body.name).trim(); } if(typeof req.body.description!=='undefined')c.description=String(req.body.description); await writeDb(db); res.json({...c,participant_count:(c.participant_ids||[]).length}); });
+app.patch('/api/championships/:id/settings', async (req, res) => { const db = readDb(); const c = db.championships.find(x => x.id === req.params.id); if (!c) return res.sendStatus(404); const incoming = req.body?.position_highlights || {}; const enabled = incoming.enabled !== false; const colors = Array.isArray(incoming.colors) ? incoming.colors.slice(0, 8).map(x => String(x)) : []; c.position_highlights = { enabled, colors: colors.length ? colors : ['#183b63','#254d3a','#5a4a1f','#4b2630'] }; await writeDb(db); res.json(c.position_highlights); });
+app.delete('/api/championships/:id', requireRole('owner'), async (req, res) => { const db = readDb(); db.championships = db.championships.filter(c => c.id !== req.params.id); db.matches = db.matches.filter(m => m.championship_id !== req.params.id); await writeDb(db); res.sendStatus(204); });
+app.post('/api/championships/:id/generate', async (req, res) => {
   const db = readDb(); const ch = db.championships.find(c => c.id === req.params.id); if (!ch) return res.sendStatus(404);
   clearMatches(db, ch.id); const ids = (ch.participant_ids || []).filter(id => db.players.some(p => p.id === id)); if (ids.length < 2) return res.status(400).json({ error: 'O campeonato precisa de pelo menos 2 participantes.' });
   let count = 0; if (ch.type === 'league') count = generateLeague(db, ch, ids); else if (ch.type === 'knockout') count = generateKnockout(db, ch, ids); else count = generateGroups(db, ch, ids);
-  ch.status = 'active'; ch.generated_at = new Date().toISOString(); writeDb(db); res.json({ count, championship: ch });
+  ch.status = 'active'; ch.generated_at = new Date().toISOString(); await writeDb(db); res.json({ count, championship: ch });
 });
 app.get('/api/championships/:id/matches', (req, res) => { const db = readDb(); const ms = db.matches.filter(m => m.championship_id === req.params.id).sort((a, b) => (a.round || 0) - (b.round || 0) || (a.tie_order || 0) - (b.tie_order || 0) || (a.leg || 0) - (b.leg || 0)); res.json(ms.map(m => ({ ...m, home_name: playerName(db, m.home_id), away_name: playerName(db, m.away_id), home_logo: playerView(db,db.players.find(p=>p.id===m.home_id)||{}).logo_url, away_logo: playerView(db,db.players.find(p=>p.id===m.away_id)||{}).logo_url }))); });
-app.patch('/api/matches/:id/result', (req, res) => { const db = readDb(); const m = db.matches.find(x => x.id === req.params.id); if (!m) return res.sendStatus(404); if (m.status === 'bye') return res.status(400).json({ error: 'Confronto por bye não recebe placar.' }); const { home_score, away_score, winner_id = null } = req.body; if (home_score === '' || away_score === '' || home_score == null || away_score == null || Number(home_score) < 0 || Number(away_score) < 0) return res.status(400).json({ error: 'Placar inválido.' }); m.home_score = Number(home_score); m.away_score = Number(away_score); m.status = 'played'; if (winner_id) m.winner_id = winner_id; const ch = db.championships.find(c => c.id === m.championship_id); if (ch?.type !== 'league') resolveKnockoutProgress(db, ch); if (ch?.type === 'groups') advanceGroups(db, ch); writeDb(db); res.json({ ok: true }); });
-app.post('/api/championships/:id/advance', (req, res) => { const db = readDb(); const ch = db.championships.find(c => c.id === req.params.id); if (!ch) return res.sendStatus(404); if (ch.type !== 'groups') return res.status(400).json({ error: 'Apenas grupos + mata-mata usa avanço de fase.' }); const ok = advanceGroups(db, ch); if (!ok) return res.status(400).json({ error: 'Finalize todos os jogos da fase de grupos antes de avançar.' }); writeDb(db); res.json({ ok: true }); });
+app.patch('/api/matches/:id/result', async (req, res) => { const db = readDb(); const m = db.matches.find(x => x.id === req.params.id); if (!m) return res.sendStatus(404); if (m.status === 'bye') return res.status(400).json({ error: 'Confronto por bye não recebe placar.' }); const { home_score, away_score, winner_id = null } = req.body; if (home_score === '' || away_score === '' || home_score == null || away_score == null || Number(home_score) < 0 || Number(away_score) < 0) return res.status(400).json({ error: 'Placar inválido.' }); m.home_score = Number(home_score); m.away_score = Number(away_score); m.status = 'played'; if (winner_id) m.winner_id = winner_id; const ch = db.championships.find(c => c.id === m.championship_id); if (ch?.type !== 'league') resolveKnockoutProgress(db, ch); if (ch?.type === 'groups') advanceGroups(db, ch); await writeDb(db); res.json({ ok: true }); });
+app.post('/api/championships/:id/advance', async (req, res) => { const db = readDb(); const ch = db.championships.find(c => c.id === req.params.id); if (!ch) return res.sendStatus(404); if (ch.type !== 'groups') return res.status(400).json({ error: 'Apenas grupos + mata-mata usa avanço de fase.' }); const ok = advanceGroups(db, ch); if (!ok) return res.status(400).json({ error: 'Finalize todos os jogos da fase de grupos antes de avançar.' }); await writeDb(db); res.json({ ok: true }); });
 app.get('/api/championships/:id/standings', (req, res) => { const db = readDb(); const ch = db.championships.find(c => c.id === req.params.id); if (!ch) return res.sendStatus(404); if (ch.type === 'groups') return res.json({ groups: (ch.groups || []).map(g => ({ name: g.name, rows: standingsFor(db, ch, g.name) })) }); res.json({ groups: [{ name: 'Classificação', rows: standingsFor(db, ch) }] }); });
 app.get('/api/championships/:id/stats', (req, res) => { const db = readDb(); const ch = db.championships.find(c => c.id === req.params.id); if (!ch) return res.sendStatus(404); const ms = db.matches.filter(m => m.championship_id === ch.id && m.status === 'played'); const goals = ms.reduce((s, m) => s + Number(m.home_score) + Number(m.away_score), 0); const scorers = {}; ms.forEach(m => { if (m.home_score > m.away_score) scorers[m.home_id] = (scorers[m.home_id] || 0) + Number(m.home_score); if (m.away_score > m.home_score) scorers[m.away_id] = (scorers[m.away_id] || 0) + Number(m.away_score); }); res.json({ played: ms.length, goals, avg_goals: ms.length ? goals / ms.length : 0, top_scorers: Object.entries(scorers).sort((a,b) => b[1]-a[1]).slice(0, 10).map(([id, g]) => ({ id, name: playerName(db,id), wins: g })), champion: championFor(db,ch) }); });
-app.post('/api/championships/:id/share', (req, res) => { const db = readDb(); const ch = db.championships.find(c => c.id === req.params.id); if (!ch) return res.sendStatus(404); let share = db.shares.find(s => s.championship_id === ch.id); if (!share) { share = { token: nanoid(12), championship_id: ch.id, created_at: new Date().toISOString() }; db.shares.push(share); writeDb(db); } res.json({ token: share.token, path: `/share/${share.token}` }); });
+app.post('/api/championships/:id/share', async (req, res) => { const db = readDb(); const ch = db.championships.find(c => c.id === req.params.id); if (!ch) return res.sendStatus(404); let share = db.shares.find(s => s.championship_id === ch.id); if (!share) { share = { token: nanoid(12), championship_id: ch.id, created_at: new Date().toISOString() }; db.shares.push(share); await writeDb(db); } res.json({ token: share.token, path: `/share/${share.token}` }); });
 app.get('/api/share/:token', (req,res) => { const db=readDb(); const share=db.shares.find(s=>s.token===req.params.token); if(!share) return res.status(404).json({error:'Link de compartilhamento inválido.'}); const ch=db.championships.find(c=>c.id===share.championship_id); if(!ch) return res.status(404).json({error:'Campeonato não encontrado.'}); res.json(publicData(db,ch)); });
 app.get('/api/teams/logo', (req,res) => { const team=String(req.query.name||'').trim(); res.json({ team, logo_url: logoForTeam(team) }); });
 app.get('/api/dashboard', (_, res) => { const db = readDb(); res.json({ players: db.players.length, championships: db.championships.length, matches: db.matches.filter(m => m.status === 'played').length, scheduled: db.matches.filter(m => m.status === 'scheduled').length }); });
