@@ -39,12 +39,17 @@ export const ready = (async () => {
     if (!fs.existsSync(dbFile)) fs.writeFileSync(dbFile, JSON.stringify(blobDb, null, 2));
     return;
   }
-  const remote = await blobStore.get('db.json', { type: 'json', consistency: 'strong' });
-  if (remote) {
-    blobDb = normalizeDb(remote);
-  } else {
-    blobDb = await loadLocalDb();
-    await blobStore.setJSON('db.json', blobDb);
+  try {
+    const remote = await blobStore.get('db.json', { type: 'json', consistency: 'strong' });
+    if (remote) {
+      blobDb = normalizeDb(remote);
+    } else {
+      blobDb = normalizeDb(seedDb);
+      await blobStore.setJSON('db.json', blobDb);
+    }
+  } catch (err) {
+    console.error('Falha ao inicializar o banco NXL no Netlify Blobs:', err);
+    throw err;
   }
 })();
 
