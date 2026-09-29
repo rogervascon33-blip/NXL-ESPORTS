@@ -7,7 +7,7 @@
 
 [functions]
   directory = "netlify/functions"
-  external_node_modules = ["express", "@netlify/blobs", "serverless-http"]
+  external_node_modules = ["express", "@netlify/blobs", "serverless-http", "@netlify/aws-lambda-compat"]
   node_bundler = "esbuild"
   included_files = ["server/data/nxl.json"]
 

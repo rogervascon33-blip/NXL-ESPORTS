@@ -15,7 +15,7 @@ app.use(cors());
 app.use(express.json({ limit: '5mb' }));
 
 const emptyDb = { players: [], championships: [], matches: [], shares: [], users: [], sessions: [] };
-const useNetlifyBlobs = process.env.NETLIFY === 'true' || process.env.NETLIFY_DEV === 'true';
+const useNetlifyBlobs = process.env.NETLIFY === 'true' || process.env.NETLIFY_DEV === 'true' || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
 const projectDir = path.resolve(process.cwd(), 'server');
 const dataDir = path.join(projectDir, 'data');
 const dbFile = path.join(dataDir, 'nxl.json');
