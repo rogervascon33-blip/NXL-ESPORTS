@@ -276,50 +276,59 @@ function knockoutWinner(db, ch, tieId) {
   return null;
 }
 function resolveKnockoutProgress(db, ch) {
-  const rounds = Math.max(0, ...db.matches.filter(m => m.championship_id === ch.id && m.type === 'knockout').map(m => m.round || 0));
+  const ko = db.matches.filter(m => m.championship_id === ch.id && m.type === 'knockout');
+  const rounds = Math.max(0, ...ko.map(m => Number(m.round) || 0));
   for (let r = 1; r <= rounds; r++) {
-    const ties = [...new Set(db.matches.filter(m => m.championship_id === ch.id && m.type === 'knockout' && m.round === r).map(m => m.tie_id))];
-    for (const tieId of ties) {
-      const games = db.matches.filter(m => m.championship_id === ch.id && m.type === 'knockout' && m.tie_id === tieId);
-      const hasBye = games.some(m => m.status === 'bye');
-      if (games.length === 1 && (!games[0].home_id || !games[0].away_id)) {
-        const winner = games[0].home_id || games[0].away_id;
-        if (winner) { games[0].status = 'bye'; games[0].winner_id = winner; }
+    const roundMatches = db.matches.filter(m => m.championship_id === ch.id && m.type === 'knockout' && Number(m.round) === r);
+    const tieIds = [...new Set(roundMatches.map(m => m.tie_id).filter(Boolean))];
+    const winners = [];
+    for (const tieId of tieIds) {
+      const games = roundMatches.filter(m => m.tie_id === tieId);
+      const hasBye = games.some(g => g.status === 'bye');
+      let winner = knockoutWinner(db, ch, tieId);
+      if (!winner) winner = games.find(g => g.status === 'bye')?.winner_id || null;
+      // A one-sided tie is a bye only when there is exactly one participant.
+      const participants = [...new Set(games.flatMap(g => [g.home_id, g.away_id]).filter(Boolean))];
+      if (!winner && participants.length === 1 && games.some(g => !g.home_id || !g.away_id)) {
+        winner = participants[0];
+        games.forEach(g => {
+          g.status = 'bye';
+          g.winner_id = winner;
+          if (!g.home_id) g.home_id = winner;
+          if (!g.away_id && g.home_id !== winner) g.away_id = winner;
+        });
       }
-      const distinctPlayers = [...new Set(games.flatMap(g => [g.home_id, g.away_id]).filter(Boolean))];
-      if (distinctPlayers.length === 1 && games.some(g => !g.home_id || !g.away_id)) {
-        games.forEach(g => { g.status = 'bye'; g.winner_id = distinctPlayers[0]; g.home_id = distinctPlayers[0]; g.away_id = null; });
+      const sourceOrder = Number(games[0]?.tie_order ?? 0);
+      winners.push({ tieId, sourceOrder, winner });
+    }
+    if (r >= rounds) continue;
+    const nextRound = db.matches.filter(m => m.championship_id === ch.id && m.type === 'knockout' && Number(m.round) === r + 1);
+    const nextTieIds = [...new Set(nextRound.map(m => m.tie_id).filter(Boolean))];
+    for (const nextTieId of nextTieIds) {
+      const legs = nextRound.filter(m => m.tie_id === nextTieId).sort((a,b) => Number(a.leg||0)-Number(b.leg||0));
+      const destOrder = Number(legs[0]?.tie_order ?? 0);
+      const left = winners.find(w => w.sourceOrder === destOrder * 2)?.winner || null;
+      const right = winners.find(w => w.sourceOrder === destOrder * 2 + 1)?.winner || null;
+      // Always rebuild the participants for the next tie from the actual winners.
+      // This removes stale values such as an old finalist name from a previous attempt.
+      if (legs[0]) {
+        legs[0].home_id = left;
+        legs[0].away_id = right;
       }
-      const winner = knockoutWinner(db, ch, tieId) || games.find(g => g.status === 'bye')?.winner_id;
-      if (!winner) continue;
-      // The winner of tie T feeds the next-round tie floor(T / 2).
-      // T even occupies the HOME slot; T odd occupies the AWAY slot.
-      // (The old code incorrectly checked nextTie.tie_order, which is always
-      // the destination tie index and caused both semifinalists to be written
-      // into the same side.)
-      const sourceTieOrder = games[0].tie_order || 0;
-      const nextTie = db.matches.find(
-        m => m.championship_id === ch.id &&
-             m.type === 'knockout' &&
-             m.round === r + 1 &&
-             m.tie_order === Math.floor(sourceTieOrder / 2)
-      );
-      if (!nextTie) continue;
-
-      const legs = db.matches.filter(
-        m => m.championship_id === ch.id &&
-             m.type === 'knockout' &&
-             m.tie_id === nextTie.tie_id
-      ).sort((a, b) => a.leg - b.leg);
-
-      if (sourceTieOrder % 2 === 0) {
-        // First source tie -> home in leg 1, away in leg 2.
-        if (legs[0]) legs[0].home_id = winner;
-        if (legs[1]) legs[1].away_id = winner;
-      } else {
-        // Second source tie -> away in leg 1, home in leg 2.
-        if (legs[0]) legs[0].away_id = winner;
-        if (legs[1]) legs[1].home_id = winner;
+      if (legs[1]) {
+        legs[1].home_id = right;
+        legs[1].away_id = left;
+      }
+      // A scheduled future tie must remain editable only after both participants exist.
+      for (const leg of legs) {
+        if (leg.status !== 'played' && leg.status !== 'bye') {
+          leg.status = 'scheduled';
+          leg.home_score = null;
+          leg.away_score = null;
+          leg.winner_id = null;
+          leg.home_penalties = null;
+          leg.away_penalties = null;
+        }
       }
     }
   }
