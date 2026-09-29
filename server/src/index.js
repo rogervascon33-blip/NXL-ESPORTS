@@ -139,7 +139,14 @@ const TEAM_LOGOS = {
 };
 function normalizeTeamName(name='') { return name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim(); }
 function logoForTeam(team='') { return TEAM_LOGOS[normalizeTeamName(team)] || null; }
-function playerView(db, p) { const displayTeam = String(p.team || p.name || '').trim(); return { ...p, team: displayTeam, logo_url: p.logo_url || logoForTeam(displayTeam || p.name || '') }; }
+const CANONICAL_TEAMS = {
+  palmeiras: 'Palmeiras', bahia: 'Bahia', santos: 'Santos', flamengo: 'Flamengo',
+  corinthians: 'Corinthians', 'sao paulo': 'São Paulo', 'vasco da gama': 'Vasco da Gama',
+  vasco: 'Vasco', gremio: 'Grêmio', internacional: 'Internacional', botafogo: 'Botafogo',
+  cruzeiro: 'Cruzeiro', 'atletico mineiro': 'Atlético Mineiro', vitoria: 'Vitória'
+};
+function canonicalTeamName(name='') { return CANONICAL_TEAMS[normalizeTeamName(name)] || String(name||'').trim(); }
+function playerView(db, p) { const displayTeam = canonicalTeamName(String(p.team || p.name || '').trim()); return { ...p, name: canonicalTeamName(p.name || displayTeam), team: displayTeam, logo_url: p.logo_url || logoForTeam(displayTeam || p.name || '') }; }
 function championFor(db, ch) {
   // A championship only has a champion after the final tie is completely played.
   // Never treat a bye, a stale winner_id, or a partially populated final as a champion.
@@ -298,7 +305,7 @@ function resolveKnockoutProgress(db, ch) {
       if (!winner) winner = games.find(g => g.status === 'bye')?.winner_id || null;
       // A one-sided tie is a bye only when there is exactly one participant.
       const participants = [...new Set(games.flatMap(g => [g.home_id, g.away_id]).filter(Boolean))];
-      if (!winner && participants.length === 1 && games.some(g => !g.home_id || !g.away_id)) {
+      if (!winner && r === 1 && participants.length === 1 && games.some(g => !g.home_id || !g.away_id)) {
         winner = participants[0];
         games.forEach(g => {
           g.status = 'bye';
@@ -339,6 +346,24 @@ function resolveKnockoutProgress(db, ch) {
           leg.away_penalties = null;
         }
       }
+    }
+  }
+}
+
+
+function repairFinal(db, ch) {
+  const ko = db.matches.filter(m => m.championship_id === ch.id && m.type === 'knockout');
+  if (!ko.length) return;
+  resolveKnockoutProgress(db, ch);
+  const finalRound = Math.max(...ko.map(m => Number(m.round) || 0));
+  const finals = db.matches.filter(m => m.championship_id === ch.id && m.type === 'knockout' && Number(m.round) === finalRound);
+  // A final is never a bye. It must wait for both semifinal winners.
+  for (const m of finals) {
+    if (m.status === 'bye') m.status = 'scheduled';
+    if (!m.home_id || !m.away_id) {
+      m.status = 'scheduled';
+      m.home_score = null; m.away_score = null; m.winner_id = null;
+      m.home_penalties = null; m.away_penalties = null;
     }
   }
 }
@@ -412,15 +437,15 @@ app.delete('/api/moderators/:id', requireRole('owner'), async (req,res)=>{ const
 app.patch('/api/moderators/:id', requireRole('owner'), async (req,res)=>{ const db=readDb(); const u=db.users.find(x=>x.id===req.params.id); if(!u) return res.sendStatus(404); if(req.body?.password){ if(String(req.body.password).length<6)return res.status(400).json({error:'A senha deve ter pelo menos 6 caracteres.'}); u.password_hash=hashPassword(req.body.password); } if(req.body?.name)u.name=String(req.body.name).trim(); await writeDb(db); res.json({id:u.id,name:u.name,username:u.username,role:u.role}); });
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 app.get('/api/players', (_, res) => { const db = readDb(); res.json(db.players.sort((a, b) => a.name.localeCompare(b.name)).map(p => playerView(db,p))); });
-app.post('/api/players', requireRole('owner'), async (req, res) => { const db = readDb(); const { name, handle = '', team = '', logo_url = '' } = req.body; if (!name?.trim()) return res.status(400).json({ error: 'Nome obrigatório' }); const displayTeam = String(team || name || '').trim(); const p = { id: nanoid(), name: name.trim(), handle: handle.trim(), team: displayTeam, logo_url: logo_url || logoForTeam(displayTeam || name), created_at: new Date().toISOString() }; db.players.push(p); await writeDb(db); res.status(201).json(playerView(db,p)); });
-app.delete('/api/players/:id', requireRole('owner'), async (req, res) => { const db = readDb(); if (db.championships.some(c => (c.participant_ids || []).includes(req.params.id))) return res.status(409).json({ error: 'Jogador participa de um campeonato. Remova-o dos campeonatos antes.' }); db.players = db.players.filter(p => p.id !== req.params.id); await writeDb(db); res.sendStatus(204); });
+app.post('/api/players', requireRole('owner'), async (req, res) => { const db = readDb(); const rawName = String(req.body?.name || req.body?.team || '').trim(); const rawTeam = String(req.body?.team || rawName).trim(); if (!rawName) return res.status(400).json({ error: 'Nome do time obrigatório.' }); const displayTeam = canonicalTeamName(rawTeam || rawName); const displayName = canonicalTeamName(rawName || displayTeam); const p = { id: nanoid(), name: displayName, handle: String(req.body?.handle || '').trim(), team: displayTeam, logo_url: String(req.body?.logo_url || '').trim() || logoForTeam(displayTeam || displayName), created_at: new Date().toISOString() }; db.players.push(p); await writeDb(db); res.status(201).json(playerView(db,p)); });
+app.delete('/api/players/:id', requireRole('owner'), async (req, res) => { const db = readDb(); if (db.championships.some(c => (c.participant_ids || []).includes(req.params.id))) return res.status(409).json({ error: 'O time participa de um campeonato. Remova-o dos campeonatos antes.' }); db.players = db.players.filter(p => p.id !== req.params.id); await writeDb(db); res.sendStatus(204); });
 app.patch('/api/players/:id', requireRole('owner'), async (req, res) => { const db = readDb(); const p = db.players.find(x => x.id === req.params.id); if (!p) return res.sendStatus(404); if (typeof req.body.logo_url !== 'undefined') { const logo = String(req.body.logo_url || ''); if (logo && !/^data:image\/(png|jpe?g|webp);base64,/i.test(logo)) return res.status(400).json({ error: 'Escudo inválido. Use PNG, JPG ou WebP.' }); p.logo_url = logo; } await writeDb(db); res.json(playerView(db, p)); });
 
 app.get('/api/championships', (_, res) => { const db = readDb(); res.json(db.championships.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).map(c => ({ ...c, participant_count: (c.participant_ids || []).length }))); });
 app.post('/api/championships', async (req, res) => {
   const db = readDb(); const { name, description = '', type = 'league', legs = 1, participant_ids = [], points_win = 3, points_draw = 1, group_count = 2, qualifiers_per_group = 2, knockout_legs = 1 } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'Nome obrigatório' });
-  if (participant_ids.length < 2) return res.status(400).json({ error: 'Selecione pelo menos 2 jogadores.' });
+  if (participant_ids.length < 2) return res.status(400).json({ error: 'Selecione pelo menos 2 times.' });
   const c = { id: nanoid(), name: name.trim(), description, type, legs: Number(legs) === 2 ? 2 : 1, points_win: Number(points_win) || 3, points_draw: Number(points_draw) || 1, participant_ids, group_count: Number(group_count) || 2, qualifiers_per_group: Number(qualifiers_per_group) || 2, knockout_legs: Number(knockout_legs) === 2 ? 2 : 1, position_highlights: { enabled: true, colors: ['#183b63','#254d3a','#5a4a1f','#4b2630'] }, status: 'draft', created_at: new Date().toISOString(), groups: [] };
   db.championships.push(c); await writeDb(db); res.status(201).json(c);
 });
@@ -436,7 +461,7 @@ app.post('/api/championships/:id/generate', async (req, res) => {
 });
 app.get('/api/championships/:id/matches', async (req, res) => {
   const db = readDb(); const ch = db.championships.find(c => c.id === req.params.id); if (!ch) return res.sendStatus(404);
-  if (ch.type === 'knockout' || ch.type === 'groups') resolveKnockoutProgress(db, ch);
+  if (ch.type === 'knockout' || ch.type === 'groups') { resolveKnockoutProgress(db, ch); repairFinal(db, ch); }
   const validIds = new Set(db.players.map(p => p.id));
   for (const m of db.matches.filter(x => x.championship_id === ch.id && x.type === 'knockout')) {
     if (m.home_id && !validIds.has(m.home_id)) m.home_id = null;
@@ -487,7 +512,7 @@ app.patch('/api/matches/:id/result', async (req, res) => {
     m.winner_id = needsWinner ? validWinner : null;
   } else m.winner_id = null;
   m.home_score = hs; m.away_score = as; m.status = 'played';
-  if (ch?.type !== 'league') resolveKnockoutProgress(db, ch);
+  if (ch?.type !== 'league') { resolveKnockoutProgress(db, ch); repairFinal(db, ch); }
   if (ch?.type === 'groups') advanceGroups(db, ch);
   await writeDb(db); res.json({ ok: true });
 });
