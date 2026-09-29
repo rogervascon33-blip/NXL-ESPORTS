@@ -141,13 +141,22 @@ function normalizeTeamName(name='') { return name.toLowerCase().normalize('NFD')
 function logoForTeam(team='') { return TEAM_LOGOS[normalizeTeamName(team)] || null; }
 function playerView(db, p) { const displayTeam = String(p.team || p.name || '').trim(); return { ...p, team: displayTeam, logo_url: p.logo_url || logoForTeam(displayTeam || p.name || '') }; }
 function championFor(db, ch) {
+  // A championship only has a champion after the final tie is completely played.
+  // Never treat a bye, a stale winner_id, or a partially populated final as a champion.
   const ko = db.matches.filter(m => m.championship_id === ch.id && m.type === 'knockout');
   if (!ko.length) return null;
-  const finalRound = Math.max(...ko.map(m => m.round || 0));
-  const finals = ko.filter(m => m.round === finalRound);
+  const finalRound = Math.max(...ko.map(m => Number(m.round) || 0));
+  const finals = ko.filter(m => Number(m.round) === finalRound);
   if (!finals.length) return null;
-  const winner = knockoutWinner(db, ch, finals[0].tie_id) || finals.find(m => m.status === 'bye')?.winner_id;
-  return winner ? playerView(db, db.players.find(p => p.id === winner) || { id: winner, name: playerName(db, winner) }) : null;
+  const finalTieIds = [...new Set(finals.map(m => m.tie_id).filter(Boolean))];
+  if (finalTieIds.length !== 1) return null;
+  const finalGames = finals.filter(m => m.tie_id === finalTieIds[0]);
+  if (!finalGames.length || finalGames.some(m => m.status !== 'played')) return null;
+  const participants = [...new Set(finalGames.flatMap(m => [m.home_id, m.away_id]).filter(Boolean))];
+  if (participants.length !== 2) return null;
+  const winner = knockoutWinner(db, ch, finalTieIds[0]);
+  if (!winner || !participants.includes(winner)) return null;
+  return playerView(db, db.players.find(p => p.id === winner) || { id: winner, name: playerName(db, winner) });
 }
 function publicData(db, ch) {
   const ms = db.matches.filter(m => m.championship_id === ch.id).sort((a,b)=>(a.round||0)-(b.round||0)||(a.tie_order||0)-(b.tie_order||0)||(a.leg||0)-(b.leg||0));
@@ -437,6 +446,16 @@ app.get('/api/championships/:id/matches', async (req, res) => {
   await writeDb(db);
   const ms = db.matches.filter(m => m.championship_id === ch.id).sort((a, b) => (a.round || 0) - (b.round || 0) || (a.tie_order || 0) - (b.tie_order || 0) || (a.leg || 0) - (b.leg || 0));
   const ko = ms.filter(m => m.type === 'knockout'); const totalRounds = Math.max(0, ...ko.map(m => m.round || 0));
+  // If the final is not fully played, it cannot carry a champion/winner from an older state.
+  if (ko.length) {
+    const finalRound = totalRounds;
+    const finalGames = ko.filter(m => Number(m.round) === finalRound);
+    if (finalGames.some(m => m.status !== 'played')) {
+      finalGames.forEach(m => { m.winner_id = null; });
+      if (ch.status === 'completed') ch.status = 'active';
+      await writeDb(db);
+    }
+  }
   res.set('Cache-Control','no-store, no-cache, must-revalidate, proxy-revalidate'); res.set('Pragma','no-cache'); res.set('Expires','0');
   res.json(ms.map(m => ({ ...m, stage: m.type === 'knockout' ? `Mata-mata • ${knockoutStageName(m.round || 1, totalRounds)}` : m.stage, home_name: playerName(db, m.home_id), away_name: playerName(db, m.away_id), home_logo: playerView(db,db.players.find(p=>p.id===m.home_id)||{}).logo_url, away_logo: playerView(db,db.players.find(p=>p.id===m.away_id)||{}).logo_url })));
 });
