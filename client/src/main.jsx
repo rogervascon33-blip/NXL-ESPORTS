@@ -7,7 +7,9 @@ const API = import.meta.env.DEV ? `${window.location.protocol}//${window.locatio
 async function api(path, opts = {}) {
   const token = localStorage.getItem('nxl_token');
   const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(opts.headers || {}) };
-  const r = await fetch(API + path, { ...opts, headers });
+  const method = String(opts.method || 'GET').toUpperCase();
+  const url = method === 'GET' ? `${API + path}${(API + path).includes('?') ? '&' : '?'}_nxl=${Date.now()}` : API + path;
+  const r = await fetch(url, { ...opts, headers, ...(method === 'GET' ? { cache: 'no-store' } : {}) });
   if (!r.ok) { let e = 'Erro'; try { e = (await r.json()).error || e; } catch {} throw new Error(e); }
   return r.status === 204 ? null : r.json();
 }
