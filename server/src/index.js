@@ -498,7 +498,20 @@ app.patch('/api/matches/:id/result', async (req, res) => {
   if (m.type === 'knockout') {
     const validWinner = winner_id && [m.home_id, m.away_id].includes(winner_id) ? winner_id : null;
     const knockoutLegs = Number(ch?.type === 'knockout' ? (ch?.legs || 1) : (ch?.knockout_legs || 1));
-    const needsWinner = hs === as && (knockoutLegs === 1 || Number(m.leg) === 2);
+    const decisive = knockoutLegs === 1 || Number(m.leg) === 2;
+    let aggregateHome = hs, aggregateAway = as;
+    if (knockoutLegs === 2 && m.tie_id) {
+      const tieGames = db.matches.filter(x => x.championship_id === ch?.id && x.type === 'knockout' && x.tie_id === m.tie_id);
+      aggregateHome = 0; aggregateAway = 0;
+      for (const g of tieGames) {
+        const gh = g.id === m.id ? hs : (g.status === 'played' ? Number(g.home_score || 0) : null);
+        const ga = g.id === m.id ? as : (g.status === 'played' ? Number(g.away_score || 0) : null);
+        if (gh === null || ga === null) continue;
+        if (g.home_id === m.home_id) { aggregateHome += gh; aggregateAway += ga; }
+        else if (g.away_id === m.home_id) { aggregateHome += ga; aggregateAway += gh; }
+      }
+    }
+    const needsWinner = decisive && aggregateHome === aggregateAway;
     if (needsWinner) {
       const hp = Number(home_penalties), ap = Number(away_penalties);
       if (!Number.isFinite(hp) || !Number.isFinite(ap) || hp < 0 || ap < 0 || hp === ap) return res.status(400).json({ error: 'Empate decisivo: informe os pênaltis e um vencedor.' });
